@@ -1,16 +1,19 @@
-# calcite-with-quickpick
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
 
+    <groupId>groupId</groupId>
+    <artifactId>calcite-with-quickpick</artifactId>
+    <version>1.0-SNAPSHOT</version>
 
+    <properties>
+        <maven.compiler.source>8</maven.compiler.source>
+        <maven.compiler.target>8</maven.compiler.target>
+    </properties>
 
-## index
-
-
-
-- `Java version：1.8`
-- `Maven Dependency：`
-
-```
-<dependencies>
+    <dependencies>
         <!-- https://mvnrepository.com/artifact/org.apache.calcite/calcite-core -->
         <dependency>
             <groupId>org.apache.calcite</groupId>
@@ -41,19 +44,6 @@
             <version>3.26.3</version>
             <scope>test</scope>
         </dependency>
+
     </dependencies>
-```
-
-
-
-
-
-## test
-
-
-
-- **testExtractTables：**测试提取表名的功能
-- **testExtractPredicates：**测试提取谓词的功能
-- **testBuildPredicate：**测试构建谓词为 RelNode 的功能
-- **testGetStringRelNodeMap：**测试谓词与 RelNode 的映射关系
-- **testCombineTablesAndNonJoinPredicates：**测试表名（scan）与非连接谓词（filter）的结合功能
+</project>
