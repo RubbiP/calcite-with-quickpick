@@ -198,11 +198,11 @@ public class SQLParserExampleTest {
             tableNodes.put(table, tableNode);
         }
 
-        Map<String, RelNode> predicateNodes = sqlParserExample.getStringRelNodeMap(relBuilder, aliasToTableMap, nonJoinPredicates, tableNodes);
-        System.out.println("----------------------predicate : node----------------------");
-        predicateNodes.forEach((predicate,node)->{
-            System.out.println(predicate+" : "+node);
-        });
+        sqlParserExample.getStringRelNodeMap(relBuilder, aliasToTableMap, nonJoinPredicates, tableNodes);
+//        System.out.println("----------------------predicate : node----------------------");
+//        predicateNodes.forEach((predicate,node)->{
+//            System.out.println(predicate+" : "+node);
+//        });
     }
 
     @Test
@@ -253,29 +253,29 @@ public class SQLParserExampleTest {
             tableNodes.put(table, tableNode);
         }
 
-        Map<String, RelNode> predicateNodes = sqlParserExample.getStringRelNodeMap(relBuilder, aliasToTableMap, nonJoinPredicates, tableNodes);
+        sqlParserExample.getStringRelNodeMap(relBuilder, aliasToTableMap, nonJoinPredicates, tableNodes);
 
-        sqlParserExample.combineTablesAndNonJoinPredicates(relBuilder, tableToAliasMap, tableNodes, predicateNodes);
-
-
-        for (Map.Entry<String, RelNode> tableEntry : tableNodes.entrySet()) {
-            String tableName = tableEntry.getKey();
-            RelNode tableNode = tableEntry.getValue();
-
-            /*
-              @method: combineTablesAndNonJoinPredicates
-             */
-            for (Map.Entry<String, RelNode> predicateEntry : predicateNodes.entrySet()) {
-                String predicate = predicateEntry.getKey();
-                RelNode filterNode = predicateEntry.getValue();
-                if (predicate.contains(tableName) ||
-                        tableToAliasMap.get(tableName)!=null &&
-                                predicate.contains(tableToAliasMap.get(tableName))) {
-                    // 将表与其对应的非连接谓词结合
-                    RelNode combinedNode = relBuilder.push(tableNode).push(filterNode).build();
-                    System.out.println("Combined Node for table " + tableName + ": " + combinedNode);
-                }
-            }
-        }
+//        sqlParserExample.combineTablesAndNonJoinPredicates(relBuilder, tableToAliasMap, tableNodes, predicateNodes);
+//
+//
+//        for (Map.Entry<String, RelNode> tableEntry : tableNodes.entrySet()) {
+//            String tableName = tableEntry.getKey();
+//            RelNode tableNode = tableEntry.getValue();
+//
+//            /*
+//              @method: combineTablesAndNonJoinPredicates
+//             */
+//            for (Map.Entry<String, RelNode> predicateEntry : predicateNodes.entrySet()) {
+//                String predicate = predicateEntry.getKey();
+//                RelNode filterNode = predicateEntry.getValue();
+//                if (predicate.contains(tableName) ||
+//                        tableToAliasMap.get(tableName)!=null &&
+//                                predicate.contains(tableToAliasMap.get(tableName))) {
+//                    // 将表与其对应的非连接谓词结合
+//                    RelNode combinedNode = relBuilder.push(tableNode).push(filterNode).build();
+//                    System.out.println("Combined Node for table " + tableName + ": " + combinedNode);
+//                }
+//            }
+//        }
     }
 }

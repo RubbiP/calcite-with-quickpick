@@ -66,10 +66,13 @@ public class SQLParserExample {
 
 
         List<String> tablesList = new ArrayList<>();
+        List<String> aliasList = new ArrayList<>();
         Map<String,String> aliasToTableMap=new HashMap<>();
         Map<String,String> tableToAliasMap=new HashMap<>();
         // Extract tables
-        extractTables(plainSelect, tablesList,aliasToTableMap,tableToAliasMap);
+        extractTables(plainSelect, tablesList, tableToAliasMap, aliasToTableMap);
+        System.out.println("Tables: " + tablesList);
+        System.out.println("Alias to Table Map: " + aliasToTableMap.keySet());
 
         // Extract where clause
         Expression where = plainSelect.getWhere();
@@ -79,6 +82,8 @@ public class SQLParserExample {
         List<String> nonJoinPredicates=new ArrayList<>();
 
         extractPredicates(where, joinPredicatesExpression, nonJoinPredicatesExpression);
+        System.out.println("Join Predicates: " + joinPredicatesExpression);
+        System.out.println("Non-Join Predicates: " + nonJoinPredicatesExpression);
 
         joinPredicatesExpression.forEach(jp->{
             joinPredicates.add(jp.toString());
@@ -97,28 +102,26 @@ public class SQLParserExample {
         }
 
         // 映射表名称到 RelNode
-        Map<String, RelNode> tableNodes = new HashMap<>();
-        for (String table : tablesList) {
+        Map<String, RelNode> baseTableRelNodes = new HashMap<>();
+        for (String tableAlias : aliasToTableMap.keySet()) {
+            String table = aliasToTableMap.get(tableAlias);
             RelNode tableNode = relBuilder.scan(table).build();
-            tableNodes.put(table, tableNode);
+            baseTableRelNodes.put(tableAlias, tableNode);
         }
 
+        getStringRelNodeMap(relBuilder, aliasToTableMap, nonJoinPredicates, baseTableRelNodes);
 
-        Map<String, RelNode> predicateNodes = getStringRelNodeMap(relBuilder, aliasToTableMap, nonJoinPredicates, tableNodes);
-
-        combineTablesAndNonJoinPredicates(relBuilder, tableToAliasMap, tableNodes, predicateNodes);
-
-        RelNode rootNode=buildRelTree(tablesList, joinPredicates,nonJoinPredicates,
-                tableNodes,relBuilder,aliasToTableMap);
+        RelNode rootNode = buildRelTree(tablesList, joinPredicates, nonJoinPredicates,
+                baseTableRelNodes, relBuilder, aliasToTableMap);
 
         executeRelNode(rootNode);
 
     }
 
     public RelBuilder getRelBuilder() throws ClassNotFoundException, SQLException {
-        String url = "jdbc:postgresql://192.168.5.135:5432/imdbload";
-        String username = "guest";
-        String password = "guest";
+        String url = "jdbc:postgresql://192.168.180.100:5432/imdbload";
+        String username = "zihao";
+        String password = "qazedc12";
         String driverClassName = "org.postgresql.Driver";
         // 注册 PostgreSQL 驱动
         Class.forName(driverClassName);
@@ -165,15 +168,13 @@ public class SQLParserExample {
         }
     }
 
-    public Map<String, RelNode> getStringRelNodeMap(RelBuilder relBuilder, Map<String, String> aliasToTableMap, List<String> nonJoinPredicates, Map<String, RelNode> tableNodes) {
+    public void getStringRelNodeMap(RelBuilder relBuilder, Map<String, String> aliasToTableMap,
+                                                    List<String> nonJoinPredicates, Map<String, RelNode> tableNodes) {
         // 构建非连接谓词的 RelNode
         Map<String, RelNode> predicateNodes = new HashMap<>();
         for (String predicate : nonJoinPredicates) {
             // 提取表名并构建谓词 RexNode
             String tableName = extractTableName(predicate);
-            if(aliasToTableMap.get(tableName)!=null){
-                tableName= aliasToTableMap.get(tableName);
-            }
             RelNode tableNode = tableNodes.get(tableName);
             if (tableNode == null) {
                 System.out.println("Table not found for predicate: " + predicate);
@@ -182,14 +183,14 @@ public class SQLParserExample {
             RexNode rexPredicate = buildPredicate(relBuilder.getCluster(), tableNode, predicate);
 
             // 构建过滤节点
-            RelNode filterNode = relBuilder.scan(tableName).filter(rexPredicate).build();
-            predicateNodes.put(predicate, filterNode);
+            RelNode filterNode = relBuilder.scan(aliasToTableMap.get(tableName)).filter(rexPredicate).build();
+            tableNodes.put(tableName, filterNode); // 更新表的 RelNode
+
         }
-        return predicateNodes;
     }
 
-    public  void extractTables(PlainSelect plainSelect, List<String> tablesList, Map<String,String> aliasToTableMap,
-                               Map<String,String> tableToAliasMap) {
+    public  void extractTables(PlainSelect plainSelect, List<String> tablesList,
+                               Map<String,String> tableToAliasMap, Map<String,String> aliasToTableMap) {
         FromItem fromItem = plainSelect.getFromItem();
         if (fromItem instanceof Table) {
             Table table = (Table) fromItem;
@@ -293,6 +294,7 @@ public class SQLParserExample {
         String sql = "SELECT MIN(cn.name) AS producing_company, "
                 + "MIN(miidx.info) AS rating, "
                 + "MIN(t.title) AS movie "
+
                 + "FROM company_name AS cn, "
                 + "company_type AS ct, "
                 + "info_type AS it, "
@@ -302,11 +304,13 @@ public class SQLParserExample {
                 + "movie_info AS mi, "
                 + "movie_info_idx AS miidx, "
                 + "title AS t "
+
                 + "WHERE cn.country_code ='[us]' "
                 + "AND ct.kind ='production companies' "
                 + "AND it.info ='rating' "
                 + "AND it2.info ='release dates' "
                 + "AND kt.kind ='movie' "
+
                 + "AND mi.movie_id = t.id "
                 + "AND it2.id = mi.info_type_id "
                 + "AND kt.id = t.kind_id "
@@ -324,63 +328,95 @@ public class SQLParserExample {
 
 
     public RelNode buildRelTree(List<String> tableNames, List<String> joinPredicates, List<String> nonJoinPredicates,
-                                Map<String, RelNode> tableRelNodes, RelBuilder relBuilder,Map<String,String> aliasToTableMap) {
-        // Map to track subtrees for each table
-        Map<String, RelNode> subtreeRoots = new HashMap<>(tableRelNodes);
+                                Map<String, RelNode> baseTableRelNodes, RelBuilder relBuilder,Map<String,String> aliasToTableMap) {
+        Map<String, RelNode> baseTables = new HashMap<>(baseTableRelNodes);
 
-        // Set to track already processed nodes
-        Set<RelNode> processedNodes = new HashSet<>();
+        Set<RelNode> subTrees = new HashSet<>();
+        Map<RelNode, Set<String>> baseTablesInSubTree = new HashMap<>();
 
         for (String joinPredicate : joinPredicates) {
             // Parse the join predicate to extract left and right table names
-            String[] tables = parseJoinPredicate(joinPredicate,aliasToTableMap); // Implement this function to extract table names
+            String[] tables = parseJoinPredicate(joinPredicate, aliasToTableMap); // Implement this function to extract table names
+
+            // 从baseTables或者subTrees中获得tables对应的RelNode
             String leftTable = tables[0];
             String rightTable = tables[1];
 
             // Get the RelNodes for the tables
-            RelNode leftNode = subtreeRoots.get(leftTable);
-            RelNode rightNode = subtreeRoots.get(rightTable);
+            RelNode leftNode = baseTables.get(leftTable);
+            RelNode rightNode = baseTables.get(rightTable);
+            Set<String> tmpBaseTablesSet = new HashSet<>();
 
-            if (leftNode == null || rightNode == null) {
-                throw new RuntimeException("Missing RelNode for tables in join predicate: " + joinPredicate);
+            if (leftNode == null) {
+                for (RelNode subTree : subTrees) {
+                    // 判断subTree是否包含leftTable
+                    if (baseTablesInSubTree.get(subTree).contains(leftTable)) {
+                        leftNode = subTree;
+                        // 移除subTrees中的subTree
+                        subTrees.remove(subTree);
+                        tmpBaseTablesSet.addAll(baseTablesInSubTree.get(subTree));
+                        baseTablesInSubTree.remove(subTree);
+                        break;
+                    }
+                }
+            } else {
+                tmpBaseTablesSet.add(leftTable);
+                baseTables.remove(leftTable);
+            }
+
+             if (rightNode == null) {
+                 // 同一棵树
+                 if (tmpBaseTablesSet.contains(rightTable)){
+                     rightNode=leftNode;
+                 } else {
+                     for (RelNode subTree : subTrees) {
+                        if (baseTablesInSubTree.get(subTree).contains(rightTable)) {
+                            rightNode = subTree;
+                            // 移除subTrees中的subTree
+                            subTrees.remove(subTree);
+                            tmpBaseTablesSet.addAll(baseTablesInSubTree.get(subTree));
+                            baseTablesInSubTree.remove(subTree);
+                            break;
+                        }
+                    }
+                 }
+            } else {
+                 tmpBaseTablesSet.add(rightTable);
+                baseTables.remove(rightTable);
             }
 
             if (leftNode == rightNode) {
                 // Both tables are in the same subtree, add the join predicate
                 relBuilder.push(leftNode)
                         .filter(buildPredicate(relBuilder.getCluster(), leftNode, joinPredicate));
-                subtreeRoots.put(leftTable, relBuilder.build()); // Update subtree root
             } else {
                 // Tables are in different subtrees, join them
                 relBuilder.push(leftNode)
                         .push(rightNode)
                         .join(JoinRelType.INNER, buildPredicate(relBuilder.getCluster(), leftNode, joinPredicate));
-                RelNode joinedNode = relBuilder.build();
-
-                // Update subtree roots for both tables
-                subtreeRoots.put(leftTable, joinedNode);
-                subtreeRoots.put(rightTable, joinedNode);
-
-                processedNodes.add(joinedNode); // Mark joined node as processed
             }
+            RelNode newRelNode = relBuilder.build();
+            subTrees.add(newRelNode);
+            baseTablesInSubTree.put(newRelNode, tmpBaseTablesSet);
         }
 
         // After processing all join predicates, return the root of the tree
-        return subtreeRoots.values().iterator().next(); // Assuming all roots eventually converge
+        System.out.println("Subtrees: " + subTrees);
+        return subTrees.iterator().next();
     }
 
     // Helper method to parse join predicates and extract left and right table names
-    public String[] parseJoinPredicate(String predicate,Map<String,String> aliasToTableMap) {
+    public String[] parseJoinPredicate(String predicate, Map<String,String> aliasToTableMap) {
         // Example: "table1.id = table2.id" -> ["table1", "table2"]
         String[] parts = predicate.split("=");
         String leftTable = parts[0].split("\\.")[0].trim(); // Extract table name before "."
-        if(aliasToTableMap.get(leftTable)!=null){
-            leftTable=aliasToTableMap.get(leftTable);
-        }
+//        if(aliasToTableMap.get(leftTable)!=null){
+//            leftTable=aliasToTableMap.get(leftTable);
+//        }
         String rightTable = parts[1].split("\\.")[0].trim();
-        if(aliasToTableMap.get(rightTable)!=null){
-            rightTable=aliasToTableMap.get(rightTable);
-        }
+//        if(aliasToTableMap.get(rightTable)!=null){
+//            rightTable=aliasToTableMap.get(rightTable);
+//        }
         return new String[]{leftTable, rightTable};
     }
 
@@ -415,6 +451,8 @@ public class SQLParserExample {
         System.out.println("\nOutput Schema:");
         rowType.getFieldList().forEach(field ->
                 System.out.printf("Field: %s, Type: %s%n", field.getName(), field.getType()));
+
+
     }
 
     public void printExecutionPlan(RelNode rootNode) {
