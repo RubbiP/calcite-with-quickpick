@@ -10,6 +10,8 @@ import net.sf.jsqlparser.statement.select.Select;
 import net.sf.jsqlparser.util.TablesNamesFinder;
 import net.sf.jsqlparser.expression.Expression;
 import net.sf.jsqlparser.expression.BinaryExpression;
+import org.apache.calcite.adapter.enumerable.EnumerableRules;
+import org.apache.calcite.adapter.jdbc.JdbcRules;
 import org.apache.calcite.adapter.jdbc.JdbcSchema;
 import org.apache.calcite.config.Lex;
 import org.apache.calcite.jdbc.CalciteConnection;
@@ -17,14 +19,17 @@ import org.apache.calcite.jdbc.CalciteSchema;
 import org.apache.calcite.plan.RelOptCluster;
 import org.apache.calcite.plan.RelOptCost;
 import org.apache.calcite.plan.RelOptPlanner;
+import org.apache.calcite.plan.RelOptUtil;
 import org.apache.calcite.plan.hep.HepPlanner;
 import org.apache.calcite.plan.hep.HepProgram;
 import org.apache.calcite.plan.hep.HepProgramBuilder;
 import org.apache.calcite.rel.RelNode;
+import org.apache.calcite.rel.RelWriter;
 import org.apache.calcite.rel.core.JoinRelType;
 import org.apache.calcite.rel.externalize.RelJsonWriter;
 import org.apache.calcite.rel.externalize.RelWriterImpl;
 import org.apache.calcite.rel.metadata.RelMetadataQuery;
+import org.apache.calcite.rel.rel2sql.RelToSqlConverter;
 import org.apache.calcite.rel.rules.CoreRules;
 import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.rel.type.RelDataTypeFactory;
@@ -33,15 +38,18 @@ import org.apache.calcite.rex.RexNode;
 import org.apache.calcite.schema.SchemaPlus;
 import org.apache.calcite.schema.impl.AbstractSchema;
 import org.apache.calcite.schema.impl.AbstractTable;
+import org.apache.calcite.sql.SqlDialect;
+import org.apache.calcite.sql.SqlExplainFormat;
 import org.apache.calcite.sql.SqlExplainLevel;
+import org.apache.calcite.sql.SqlNode;
 import org.apache.calcite.sql.fun.SqlStdOperatorTable;
 import org.apache.calcite.sql.parser.SqlParser;
+import org.apache.calcite.sql.pretty.SqlPrettyWriter;
 import org.apache.calcite.sql.type.SqlTypeName;
-import org.apache.calcite.tools.FrameworkConfig;
-import org.apache.calcite.tools.Frameworks;
-import org.apache.calcite.tools.Planner;
-import org.apache.calcite.tools.RelBuilder;
+import org.apache.calcite.tools.*;
+import org.postgresql.core.Tuple;
 import org.postgresql.jdbc2.optional.SimpleDataSource;
+import org.apache.calcite.rel.rules.*;
 
 import javax.sql.DataSource;
 import java.io.PrintWriter;
@@ -57,7 +65,38 @@ public class SQLParserExample {
 
     public  void run() throws Exception {
 
-        RelBuilder relBuilder = getRelBuilder();
+//        RelBuilder relBuilder = getRelBuilder();
+
+        String url = "jdbc:postgresql://192.168.180.100:5432/imdbload";
+        String username = "zihao";
+        String password = "qazedc12";
+        String driverClassName = "org.postgresql.Driver";
+        // 注册 PostgreSQL 驱动
+        Class.forName(driverClassName);
+
+        // 使用 Calcite 连接 PostgreSQL 数据库
+        Properties info = new Properties();
+        info.setProperty("lex", "JAVA");
+        Connection connection = DriverManager.getConnection("jdbc:calcite:", info);
+        CalciteConnection calciteConnection = connection.unwrap(CalciteConnection.class);
+
+        SchemaPlus rootSchema = calciteConnection.getRootSchema();
+        JdbcSchema jdbcSchema = JdbcSchema.create(rootSchema, "imdbload", JdbcSchema.dataSource(url, driverClassName, username, password),
+                null, null);
+        rootSchema.add("imdbload", jdbcSchema);
+        calciteConnection.setSchema("imdbload");
+
+        //省略设置表关系
+        FrameworkConfig config = Frameworks.newConfigBuilder()
+                .parserConfig(SqlParser.configBuilder().setLex(Lex.MYSQL).build())
+                .defaultSchema(rootSchema.getSubSchema("imdbload"))
+                .programs(Programs.ofRules(EnumerableRules.ENUMERABLE_RULES))
+                .build();
+
+        Planner planner = Frameworks.getPlanner(config);
+
+        RelBuilder relBuilder = RelBuilder.create(config);
+
 
         String sql = genSQL();
 
@@ -111,10 +150,12 @@ public class SQLParserExample {
 
         getStringRelNodeMap(relBuilder, aliasToTableMap, nonJoinPredicates, baseTableRelNodes);
 
-        RelNode rootNode = buildRelTree(tablesList, joinPredicates, nonJoinPredicates,
+        RelNode logicalQueryPlanRoot = buildRelTree(tablesList, joinPredicates, nonJoinPredicates,
                 baseTableRelNodes, relBuilder, aliasToTableMap);
 
-        executeRelNode(rootNode);
+
+
+        executeRelNode(connection, logicalQueryPlanRoot);
 
     }
 
@@ -142,9 +183,13 @@ public class SQLParserExample {
         FrameworkConfig config = Frameworks.newConfigBuilder()
                 .parserConfig(SqlParser.configBuilder().setLex(Lex.MYSQL).build())
                 .defaultSchema(rootSchema.getSubSchema("imdbload"))
+                .programs(Programs.ofRules(EnumerableRules.ENUMERABLE_RULES))
                 .build();
 
+        Planner planner = Frameworks.getPlanner(config);
+
         RelBuilder relBuilder = RelBuilder.create(config);
+
         return relBuilder;
     }
 
@@ -427,14 +472,13 @@ public class SQLParserExample {
         return metadataQuery.getCumulativeCost(rootNode).getRows();
     }
 
-    public void executeRelNode(RelNode rootNode) {
+    public void executeRelNode(Connection connection, RelNode rootNode) throws SQLException {
         if (rootNode == null) {
             System.out.println("The RelNode is null. Cannot execute.");
             return;
         }
 
         // 1. Print the execution plan
-        System.out.println("Execution Plan:");
         printExecutionPlan(rootNode);
 
         // 2. Estimate and print the execution cost
@@ -446,11 +490,31 @@ public class SQLParserExample {
         System.out.printf("Estimated Row Count: %.2f%n", rowCount);
         System.out.printf("Cumulative Cost (Rows): %.2f%n", cumulativeCost);
 
-        // 3. Describe the output schema of the RelNode
-        RelDataType rowType = rootNode.getRowType();
-        System.out.println("\nOutput Schema:");
-        rowType.getFieldList().forEach(field ->
-                System.out.printf("Field: %s, Type: %s%n", field.getName(), field.getType()));
+        // 4. Execute the query and print the results
+        //HepProgramBuilder hepPgmBuilder = new HepProgramBuilder();
+        //hepPgmBuilder.addRuleCollection(EnumerableRules.ENUMERABLE_RULES);
+        //HepPlanner hepPlanner = new HepPlanner(hepPgmBuilder.build());
+        //hepPlanner.setRoot(rootNode);
+        //RelNode optimizedRoot = hepPlanner.findBestExp();
+
+
+
+        // 1. Convert the optimized RelNode to SQL
+        RelToSqlConverter relToSqlConverter = new RelToSqlConverter(SqlDialect.DatabaseProduct.POSTGRESQL.getDialect());
+        SqlNode sqlNode = relToSqlConverter.visitRoot(rootNode).asStatement();
+
+        SqlPrettyWriter writer = new SqlPrettyWriter();
+        sqlNode.unparse(writer, 0, 0);
+        String sql = writer.toString();
+        System.out.println("\nGenerated SQL:\n" + sql);
+
+        // 2. Execute the SQL query
+//        Statement statement = connection.createStatement();
+//        ResultSet resultSet = statement.executeQuery(sql);
+//        System.out.println("\nQuery Results:");
+//        while (resultSet.next()) {
+//            System.out.println(resultSet.getString(1));
+//        }
 
 
     }
